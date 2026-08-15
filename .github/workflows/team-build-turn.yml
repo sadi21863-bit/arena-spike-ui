@@ -675,12 +675,31 @@ jobs:
           exit 0
 
       - name: Commit progress
+        # The push must use a credential that carries the `workflows` OAuth
+        # scope when the turn agent touched .github/workflows/ — which is
+        # expected (AGENTS.md rule 8 gives the team its own product CI under
+        # .github/workflows/ci.yml). GITHUB_TOKEN can never carry that scope:
+        # `workflows` is a PAT/GitHub-App scope, not a GITHUB_TOKEN
+        # permission, so `permissions: workflows: write` is not even a valid
+        # YAML key (workflow fails to parse), and a push containing workflow
+        # file changes is refused with "refusing to allow a GitHub App to
+        # create or update workflow ... without `workflows` permission"
+        # (found live, spike-ui-001 zen rerun, after build + verification had
+        # both passed). Use the repo's ARENA_PUSH_TOKEN (a PAT with the
+        # `workflow` scope) for the push; the default GITHUB_TOKEN is the
+        # fallback so the harness still works on repos without that secret.
+        env:
+          ARENA_PUSH_TOKEN: ${{ secrets.ARENA_PUSH_TOKEN }}
         run: |
           git config user.name "arena-bot[${{ github.event.inputs.team || github.event.client_payload.team }}]"
           git config user.email "arena-bot@users.noreply.github.com"
           git add -A
           git diff --cached --quiet || git commit -m "Build turn ${{ github.event.inputs.turn_id || github.event.client_payload.turn_id }}"
-          git push
+          if [ -n "$ARENA_PUSH_TOKEN" ]; then
+            git push "https://x-access-token:${ARENA_PUSH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:${GITHUB_REF##*/}
+          else
+            git push
+          fi
 
       - name: Upload turn log as artifact
         if: always()
