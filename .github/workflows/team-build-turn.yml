@@ -50,8 +50,18 @@ concurrency:
 # override it — don't rely on that being set globally, since a fresh repo
 # won't have it. Declare write access explicitly so "Commit progress"'s
 # `git push` (spec §8) works regardless of the repo-level default.
+#
+# workflows: write is required (found live, spike-ui-001 zen rerun): AGENTS.md
+# rule 8 makes .github/workflows/ci.yml the team's own product CI that the
+# turn agent owns and extends — so a legitimate turn commits changes under
+# .github/workflows/. GitHub rejects a push containing workflow-file changes
+# when the token lacks `workflows` permission ("refusing to allow a GitHub App
+# to create or update workflow ... without `workflows` permission"), which
+# hard-failed the Commit progress step after the build and verification had
+# both passed.
 permissions:
   contents: write
+  workflows: write
 
 jobs:
   build-turn:
@@ -552,7 +562,18 @@ jobs:
               elif [ -f package.json ]; then
                 echo "[node] package.json present"
                 if [ ! -d node_modules ]; then
-                  fail "node_modules missing after the install phase — dependencies were not installed"
+                  # Zero-dependency projects legitimately have no node_modules
+                  # (found live, spike-ui-001: the turn agent built a
+                  # dependency-free node:http app — `npm install` succeeded and
+                  # still created no node_modules, and the old unconditional
+                  # check hard-failed the whole turn on it). Only fail when the
+                  # manifest actually declares dependencies that should have
+                  # been installed.
+                  if node -e "const p=require('./package.json');const d=Object.assign({},p.dependencies,p.devDependencies);process.exit(Object.keys(d).length?0:1)"; then
+                    fail "node_modules missing after the install phase — dependencies were not installed"
+                  else
+                    echo "[node] no dependencies declared — node_modules not expected, skipping"
+                  fi
                 else
                   if [ -f tsconfig.json ]; then
                     echo "[node] tsconfig.json present -> npx tsc --noEmit"
