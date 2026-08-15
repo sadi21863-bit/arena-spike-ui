@@ -51,17 +51,19 @@ concurrency:
 # won't have it. Declare write access explicitly so "Commit progress"'s
 # `git push` (spec §8) works regardless of the repo-level default.
 #
-# workflows: write is required (found live, spike-ui-001 zen rerun): AGENTS.md
-# rule 8 makes .github/workflows/ci.yml the team's own product CI that the
-# turn agent owns and extends — so a legitimate turn commits changes under
-# .github/workflows/. GitHub rejects a push containing workflow-file changes
-# when the token lacks `workflows` permission ("refusing to allow a GitHub App
-# to create or update workflow ... without `workflows` permission"), which
-# hard-failed the Commit progress step after the build and verification had
-# both passed.
+# NOTE on the `workflows` permission (found live, spike-ui-001 zen rerun):
+# AGENTS.md rule 8 makes .github/workflows/ci.yml the team's own product CI
+# that the turn agent owns and extends, so a legitimate turn commits changes
+# under .github/workflows/ — and GitHub refuses a push containing workflow-file
+# changes when the token lacks `workflows` permission ("refusing to allow a
+# GitHub App to create or update workflow ... without `workflows` permission"),
+# which hard-failed the Commit progress step after build and verification both
+# passed. `workflows` is NOT settable here in the YAML (invalid key, workflow
+# fails to parse) — it is a REPO SETTING: Settings > Actions > General >
+# Workflow permissions > "Read and write permissions". Every team repo and the
+# spike repo must have that enabled, or turns that touch ci.yml can never push.
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   build-turn:
