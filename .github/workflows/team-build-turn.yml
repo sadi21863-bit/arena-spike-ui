@@ -75,6 +75,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Record turn-start HEAD
+        # The "Enforce real build output" gate below must detect work that the
+        # agent COMMITTED as well as uncommitted file changes — AGENTS.md
+        # rule 5 explicitly tells the turn agent to "commit small, focused
+        # changes", so a good agent leaves a clean working tree and the old
+        # git-status-only check falsely reported "no file changes" (found live
+        # on the spike-ui-001 zen rerun: agent built the app, ran 7 green
+        # tests, committed twice, exited 0 — and was still failed). Capture
+        # the SHA the turn starts from; the gate compares against it.
+        id: turnstart
+        run: echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build team base image
         # arena-team-base:latest doesn't persist between jobs (each run is a
         # fresh VM), so it's built fresh here from docker/Dockerfile.arena-team-base
@@ -183,6 +195,15 @@ jobs:
         # $HOME/.local on startup; the read-only rootfs has no writable
         # /home, so it needs to land inside the tmpfs already mounted at /tmp.
         #
+        # --pids-limit=256 (raised from 100, spike-ui-001 zen rerun, found
+        # live): the container also runs the Playwright MCP browser for the
+        # ui-verify step. chromium's headless footprint is ~50 pids and the
+        # opencode/node baseline is ~58, so --pids-limit=100 overflowed
+        # (cgroup pids.max) and every browser launch crashed with "Target
+        # crashed" — the agent had to fall back to an HTTP smoke check. 256
+        # still bounds runaway processes (a fork bomb can't spiral) while
+        # giving a real browser turn enough headroom to actually happen.
+        #
         # --user "$(id -u):$(id -g)" (not a hardcoded 1000:1000): /workspace
         # is bind-mounted from the runner's checkout, owned by the runner's
         # actual uid — a mismatched uid can't write into it even though the
@@ -239,7 +260,7 @@ jobs:
           WATCHDOG_SILENCE_MINUTES="${WATCHDOG_SILENCE_MINUTES:-10}"
 
           docker run --rm --name "$CONTAINER" \
-            --cpus="2" --memory="4g" --memory-swap="4g" --pids-limit=100 \
+            --cpus="2" --memory="4g" --memory-swap="4g" --pids-limit=256 \
             --read-only \
             --tmpfs /tmp:noexec,nosuid,size=500m,mode=1777 \
             --user="$(id -u):$(id -g)" --cap-drop=ALL --security-opt=no-new-privileges:true \
@@ -351,13 +372,19 @@ jobs:
         # or the commit step, so a no-op turn is reported as a failure
         # instead of a silent success.
         run: |
+          START_HEAD="${{ steps.turnstart.outputs.head }}"
+          NOW_HEAD=$(git rev-parse HEAD)
           CHANGED=$(git status --porcelain -- . ':!opencode-turn.log' ':!opencode-turn.err.log')
-          if [ -z "$CHANGED" ]; then
-            echo "::error::Build turn produced no file changes outside the turn logs — the agent emitted text without writing any files. Failing the job instead of reporting a false success."
+          if [ -z "$CHANGED" ] && [ "$NOW_HEAD" = "$START_HEAD" ]; then
+            echo "::error::Build turn produced no file changes and no commits — the agent emitted text without writing any files or committing anything. Failing the job instead of reporting a false success."
             exit 1
           fi
-          echo "Files changed this turn:"
+          echo "Files changed this turn (uncommitted):"
           echo "$CHANGED"
+          if [ "$NOW_HEAD" != "$START_HEAD" ]; then
+            echo "Commits made this turn ($START_HEAD..$NOW_HEAD):"
+            git log --oneline "$START_HEAD..$NOW_HEAD"
+          fi
 
       - name: Phase B — install dependencies (network-scoped to package registries)
         # The verification step below runs --network=none, so dependencies
