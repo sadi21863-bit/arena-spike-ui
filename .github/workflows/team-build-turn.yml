@@ -109,6 +109,10 @@ jobs:
         # longer talks to Cloudflare at all, it talks to the shim on the
         # runner, so leaving Cloudflare allowlisted would only widen egress
         # for no reason.
+        # .opencode.ai is allowlisted for this SPIKE ONLY (spike-ui-001 rerun
+        # against OpenCode Zen free models after the Workers AI daily quota
+        # was exhausted) — the agent talks to the zen gateway directly instead
+        # of the Workers AI shim, so the shim's domain list is not enough.
         # github.com/api.github.com are deliberately NOT allowlisted — the
         # "Commit progress" step below does git push from the RUNNER, outside
         # any container, so nothing inside Phase A's container legitimately
@@ -120,7 +124,7 @@ jobs:
           http_port 3128
           acl allowed_ssl_ports port 443
           acl CONNECT method CONNECT
-          acl allowed_domains dstdomain .registry.npmjs.org .pypi.org .files.pythonhosted.org
+          acl allowed_domains dstdomain .registry.npmjs.org .pypi.org .files.pythonhosted.org .opencode.ai
           http_access allow CONNECT allowed_domains allowed_ssl_ports
           http_access allow allowed_domains
           http_access deny all
@@ -243,14 +247,13 @@ jobs:
             -e HTTP_PROXY=http://host.docker.internal:3128 \
             -e HTTPS_PROXY=http://host.docker.internal:3128 \
             -e NO_PROXY=localhost,127.0.0.1,host.docker.internal \
-            -e ARENA_AI_BASE_URL=http://host.docker.internal:3129/v1 \
-            -e ARENA_AI_API_KEY=shim-injects-the-real-credential \
+            -e OPENCODE_API_KEY=${{ secrets.OPENCODE_API_KEY }} \
             -e HOME=/tmp \
             -v "${{ github.workspace }}:/workspace:rw" \
             -w /workspace \
             arena-team-base:latest \
             opencode run "${{ inputs.task_prompt || github.event.client_payload.task_prompt }}" \
-              --model workers-ai/@cf/openai/gpt-oss-120b \
+              --model opencode/big-pickle \
               --auto \
               --format json > opencode-turn.log 2> opencode-turn.err.log &
           DOCKER_PID=$!
@@ -259,6 +262,22 @@ jobs:
           LAST_CHANGED=0
           LAST_ACTIVE=$(date +%s)
           TIMED_OUT=0
+          # Wait for the container to EXIST before arming the watchdog. The
+          # original loop checked `docker inspect ... = "true"` as its entry
+          # condition immediately after `docker run ... &`, but docker run
+          # needs a moment to create the container — so on the first pass the
+          # inspect returned empty, the loop never ran, the watchdog was never
+          # armed, and `wait $DOCKER_PID` then blocked for the whole job
+          # budget. Found live on spike-ui-001: the agent hung on provider
+          # 429s for 118 min and the job was silently killed by the 120-min
+          # cap instead of failing fast at the 10-min silence mark. Poll until
+          # the container shows up (it must either be running or have already
+          # exited); only then does the silence loop below take over.
+          for _ in $(seq 1 60); do
+            STATE=$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)
+            [ -n "$STATE" ] && break
+            sleep 1
+          done
           # Loop on the CONTAINER's state, not `kill -0 $DOCKER_PID`: a
           # backgrounded process that has exited stays a zombie until `wait`,
           # and kill -0 keeps succeeding on a zombie — so that test would never
