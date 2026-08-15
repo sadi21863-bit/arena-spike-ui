@@ -696,6 +696,13 @@ jobs:
           git add -A
           git diff --cached --quiet || git commit -m "Build turn ${{ github.event.inputs.turn_id || github.event.client_payload.turn_id }}"
           if [ -n "$ARENA_PUSH_TOKEN" ]; then
+            # actions/checkout sets an http.extraheader with GITHUB_TOKEN
+            # (a GitHub App token), and git sends that Authorization header in
+            # preference to the credential embedded in the push URL — so the
+            # PAT in the URL was silently ignored and GitHub still saw a
+            # GitHub App token and refused the workflow-file changes. Drop the
+            # extraheader first so the PAT is the only credential offered.
+            git config --unset-all http.https://github.com/.extraheader 2>/dev/null || true
             git push "https://x-access-token:${ARENA_PUSH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:${GITHUB_REF##*/}
           else
             git push
